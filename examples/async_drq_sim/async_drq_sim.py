@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 
+import os
+# Set MuJoCo rendering backend before importing mujoco to avoid X11/GLX errors
+# Use 'glfw' as fallback since 'egl' might not be available
+if 'MUJOCO_GL' not in os.environ:
+    os.environ['MUJOCO_GL'] = 'glfw'
+
 import time
 from functools import partial
 import jax
@@ -345,7 +351,7 @@ def main(_):
     # replicate agent across devices
     # need the jnp.array to avoid a bug where device_put doesn't recognize primitives
     agent: DrQAgent = jax.device_put(
-        jax.tree_map(jnp.array, agent), sharding.replicate()
+        jax.tree_util.tree_map(jnp.array, agent), sharding.replicate()
     )
 
     if FLAGS.learner:
