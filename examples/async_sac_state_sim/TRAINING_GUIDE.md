@@ -630,40 +630,430 @@ policy_fn = lambda obs: agent.sample_actions(obs, argmax=True)
 ```
 
 ---
-## Part 11: Summary Timeline
+## Part 11: HOW THE ROBOT KNOWS WHAT TO DO (Reward Functions)
+
+**Your Question:** "How does it understand what I want to do? Like pick a cube?"
+
+**Answer:** Through the **REWARD FUNCTION** in the environment!
+
+### The Missing Piece: Environment = Task Definition
 
 ```
-Time     Learner Terminal              Actor Terminal
-─────────────────────────────────────────────────────────
+┌────────────────────────────────────────────────────────────┐
+│                    ENVIRONMENT FILE                        │
+│             (e.g., franka_pick_cube.py)                    │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│ class PickCubeEnv(gym.Env):                               │
+│                                                            │
+│     def reset(self):                                       │
+│         # Put cube on table at random position            │
+│         # Put robot at random starting pose               │
+│         return observation                                 │
+│                                                            │
+│     def step(self, action):                                │
+│         # Execute robot action (move arm)                  │
+│         # Get new robot state                              │
+│         # Get cube position                                │
+│                                                            │
+│         ┌──────────────────────────────────────────┐       │
+│         │ REWARD FUNCTION (defines the task!)     │       │
+│         ├──────────────────────────────────────────┤       │
+│         │ distance_to_cube = dist(gripper, cube)  │       │
+│         │ cube_lifted = (cube.z > 0.1)            │       │
+│         │                                         │       │
+│         │ if cube_lifted:                         │       │
+│         │     reward = +10.0  # SUCCESS!          │       │
+│         │ else:                                   │       │
+│         │     reward = -distance_to_cube          │       │
+│         │              (closer = higher reward)   │       │
+│         └──────────────────────────────────────────┘       │
+│                                                            │
+│         done = (cube_lifted or steps > 100)                │
+│         return obs, reward, done, info                     │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+### How Learning Works (Complete Picture)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ACTOR: Tries different actions                             │
+│                                                             │
+│ Random action #1: Move gripper left                        │
+│   → Distance to cube increases                             │
+│   → reward = -0.5  (BAD - moving away!)                    │
+│                                                             │
+│ Random action #2: Move gripper right                       │
+│   → Distance to cube decreases                             │
+│   → reward = -0.1  (BETTER - getting closer!)              │
+│                                                             │
+│ Random action #3: Move gripper down + close                │
+│   → Gripper touches cube, lifts it!                        │
+│   → reward = +10.0  (GREAT - task complete!)               │
+│                                                             │
+│ All stored: (state, action, reward, next_state)            │
+└─────────────────────────────────────────────────────────────┘
+                        ↓
+            Sent to Replay Buffer
+                        ↓
+┌─────────────────────────────────────────────────────────────┐
+│ LEARNER: Figures out pattern                               │
+│                                                             │
+│ Critic learns:                                             │
+│   Q(state="far from cube", action="move closer") = high    │
+│   Q(state="far from cube", action="move away") = low       │
+│   Q(state="near cube", action="grasp") = very high         │
+│                                                             │
+│ Actor learns:                                              │
+│   "When far → move closer"                                 │
+│   "When close → grasp and lift"                            │
+│   "This maximizes reward!"                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Example Reward Functions for Different Tasks
+
+**Task 1: Pick Cube (Single Robot)**
+```python
+def compute_reward(self, obs, action):
+    gripper_pos = obs['robot_pos']
+    cube_pos = obs['cube_pos']
+    
+    # Distance-based shaping
+    dist = np.linalg.norm(gripper_pos - cube_pos)
+    reward = -dist  # Closer = better
+    
+    # Success bonus
+    if cube_pos[2] > 0.15:  # Cube lifted 15cm
+        reward += 10.0
+        done = True
+    
+    return reward, done
+```
+
+**Task 2: Dual Arm Handover (Two Robots)**
+```python
+def compute_reward(self, obs, action):
+    robot1_gripper = obs['robot1_pos']
+    robot2_gripper = obs['robot2_pos']
+    cube_pos = obs['cube_pos']
+    
+    # Phase 1: Robot 1 picks cube
+    if not self.cube_grasped_by_robot1:
+        dist1 = np.linalg.norm(robot1_gripper - cube_pos)
+        reward = -dist1
+        
+        if cube_in_robot1_gripper(obs):
+            self.cube_grasped_by_robot1 = True
+            reward += 5.0  # Pickup bonus
+    
+    # Phase 2: Robot 1 moves to handover position
+    elif not self.cube_handed_over:
+        handover_pos = [0.5, 0.0, 0.3]  # Middle position
+        dist_to_handover = np.linalg.norm(robot1_gripper - handover_pos)
+        reward = -dist_to_handover
+        
+        # Robot 2 should approach
+        dist2_to_handover = np.linalg.norm(robot2_gripper - handover_pos)
+        reward -= dist2_to_handover
+        
+        if both_robots_at_handover(obs):
+            self.cube_handed_over = True
+            reward += 10.0  # Handover bonus
+    
+    # Phase 3: Robot 2 places cube
+    else:
+        target_pos = [1.0, 0.0, 0.1]  # Goal position
+        dist_to_goal = np.linalg.norm(cube_pos - target_pos)
+        reward = -dist_to_goal
+        
+        if cube_at_goal(obs):
+            reward += 20.0  # Success!
+            done = True
+    
+    return reward, done
+```
+
+### Where Reward Function Lives
+
+```
+Your Repository Structure:
+
+examples/
+  async_sac_state_sim/
+    async_sac_state_sim.py  ← Training script (generic!)
+    
+franka_sim/  OR  trossen_sim/
+  franka_sim/
+    envs/
+      pick_cube.py  ← REWARD FUNCTION HERE! ✓
+      peg_insert.py
+      cable_route.py
+      
+  gym.register(
+      id='PandaPickCube-v0',
+      entry_point='franka_sim.envs:PickCubeEnv',
+  )
+```
+
+**The training script is GENERIC - it works for ANY environment!**
+**The TASK is defined entirely by the environment's reward function!**
+
+---
+## Part 12: Demo Data (Optional Bootstrap)
+
+**Your Question:** "Do we provide any dataset for training?"
+
+**Answer:** OPTIONAL! You can train from scratch OR bootstrap with demos.
+
+### Training From Scratch (Pure RL)
+```
+┌────────────────────────────────────────────────────────────┐
+│ Step 0-300: Random exploration                             │
+│   → Actor tries random actions                             │
+│   → Some get positive rewards by luck                      │
+│   → Stored in replay buffer                                │
+│                                                            │
+│ Step 300+: Learning from experience                        │
+│   → Learner finds patterns in random data                  │
+│   → Policy slowly improves                                 │
+│   → Collects better data → learns faster                   │
+│   → Eventually solves task!                                │
+│                                                            │
+│ Time: Can take MANY hours/days for complex tasks          │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Training With Demo Data (Faster!)
+```
+┌────────────────────────────────────────────────────────────┐
+│ BEFORE training: Collect human demonstrations              │
+│                                                            │
+│ 1. Teleop robot (keyboard/joystick/VR)                    │
+│ 2. Human performs task 10-50 times                         │
+│ 3. Save demonstrations:                                    │
+│      (state, action, reward, next_state, done)            │
+│ 4. Store in RLDS format (TensorFlow dataset)              │
+│                                                            │
+│ DURING training:                                           │
+│   ┌────────────────────────────────────────────────┐      │
+│   │ Replay Buffer starts with:                    │      │
+│   │  - 1000 demo transitions (human data)         │      │
+│   │  - Then adds actor's data as it collects      │      │
+│   │                                               │      │
+│   │ Learner samples from BOTH:                    │      │
+│   │  - Demo data (shows good behavior)            │      │
+│   │  - New data (explores variations)             │      │
+│   └────────────────────────────────────────────────┘      │
+│                                                            │
+│ Time: Converges 5-10× FASTER!                              │
+└────────────────────────────────────────────────────────────┘
+```
+
+### How to Provide Demo Data (In Code)
+
+**Step 1: Record demonstrations**
+```bash
+# Use teleop script to collect demos
+python record_demo.py \
+  --env PandaPickCube-v0 \
+  --num_episodes 20 \
+  --save_path demos/pick_cube_demos.rlds
+```
+
+**Step 2: Preload in training script**
+```python
+# In async_sac_state_sim.py (already supported!)
+
+if FLAGS.learner:
+    replay_buffer = make_replay_buffer(
+        env,
+        capacity=FLAGS.replay_buffer_capacity,
+        
+        # ✓ Preload demo data here!
+        preload_rlds_path=FLAGS.preload_rlds_path,  
+        # e.g., "demos/pick_cube_demos.rlds"
+    )
+```
+
+**Step 3: Launch with demo data**
+```bash
+python async_sac_state_sim.py \
+  --learner \
+  --preload_rlds_path=demos/pick_cube_demos.rlds
+```
+
+### Visual: Training With vs Without Demos
+
+```
+WITHOUT DEMOS (Pure RL):
+┌──────────────────────────────────────────────────────────┐
+│ Replay Buffer                                            │
+│ Step 0:     []                                           │
+│ Step 300:   [random data: 300 transitions]              │
+│ Step 1000:  [random + early learned: 1000 transitions]  │
+│ Step 10000: [improving data: 10000 transitions]         │
+│                                                          │
+│ Learning curve: SLOW start, gradual improvement         │
+└──────────────────────────────────────────────────────────┘
+
+WITH DEMOS (Bootstrapped):
+┌──────────────────────────────────────────────────────────┐
+│ Replay Buffer                                            │
+│ Step 0:     [DEMO DATA: 1000 good transitions] ✓        │
+│ Step 300:   [demos + random: 1300 transitions]          │
+│ Step 1000:  [demos + learned: 2000 transitions]         │
+│ Step 10000: [demos + expert: 11000 transitions]         │
+│                                                          │
+│ Learning curve: FAST start (learns from demos)          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Real Example: Franka Pick & Place
+
+```
+serl/examples/async_bin_relocation_fwbw_drq/
+├── record_demo.py           ← Script to collect human demos
+├── record_bc_demos.py       ← Alternative demo collection
+├── async_drq_randomized.py  ← Training script
+└── demos/
+    └── pick_place_demos.rlds  ← Saved demo dataset
+
+Launch:
+1. Collect demos:
+   python record_demo.py --num_episodes 20
+
+2. Train with demos:
+   python async_drq_randomized.py \
+     --learner \
+     --preload_rlds_path=demos/pick_place_demos.rlds
+```
+
+---
+## Part 13: Complete Learning Pipeline (With All Pieces)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    BEFORE TRAINING                          │
+├─────────────────────────────────────────────────────────────┤
+│ 1. Design environment (franka_pick_cube.py)                 │
+│    ├─ Define observation space (robot state, cube pos)      │
+│    ├─ Define action space (motor commands)                  │
+│    └─ ✓ DEFINE REWARD FUNCTION (what success means!)        │
+│                                                             │
+│ 2. (Optional) Collect demo data                             │
+│    ├─ Teleop robot to perform task                          │
+│    └─ Save demonstrations to RLDS file                      │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    TRAINING PHASE                           │
+├─────────────────────────────────────────────────────────────┤
+│ LEARNER (Terminal 1):                                       │
+│   python async_sac.py --learner \                           │
+│     --env PandaPickCube-v0 \                                │
+│     --preload_rlds_path demos/pick.rlds  # optional         │
+│   ├─ Loads demo data (if provided)                          │
+│   ├─ Waits for actor data                                   │
+│   └─ Trains policy to maximize reward                       │
+│                                                             │
+│ ACTOR (Terminal 2):                                         │
+│   python async_sac.py --actor \                             │
+│     --env PandaPickCube-v0 \                                │
+│     --ip localhost                                          │
+│   ├─ Executes actions in environment                        │
+│   ├─ Receives rewards from environment                      │
+│   └─ Sends (state, action, reward) to learner               │
+│                                                             │
+│ ENVIRONMENT (PandaPickCube-v0):                             │
+│   ├─ Simulates/controls real robot                          │
+│   ├─ Computes reward based on task                          │
+│   └─ Returns reward to actor                                │
+└─────────────────────────────────────────────────────────────┘
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    DEPLOYMENT                               │
+├─────────────────────────────────────────────────────────────┤
+│ Load trained checkpoint:                                    │
+│   agent = SACAgent.load("checkpoints/best_model.pkl")      │
+│                                                             │
+│ Run inference:                                              │
+│   obs = env.reset()                                         │
+│   while True:                                               │
+│       action = agent.sample_actions(obs, argmax=True)       │
+│       obs, reward, done = env.step(action)                  │
+│       if done: break                                        │
+│                                                             │
+│ Result: Robot picks cube successfully! ✓                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+## Part 14: Summary Timeline (Updated)
+
+```
+Time     Learner Terminal              Actor Terminal              Environment
+─────────────────────────────────────────────────────────────────────────────────
+-1:00    (not started)                 (not started)               Task defined:
+                                                                   ✓ Reward function
+                                                                   ✓ Obs/action space
+                                                                   
+-0:30    (not started)                 (not started)               (Optional) Demos:
+                                                                   ✓ 20 episodes
+                                                                   ✓ Saved to RLDS
+                                                                   
 0:00     Start learner                 (not started)
-         Create agent, buffer, server
-         Wait for data...
+         Load demos (1000 transitions)
+         Create replay buffer
+         Wait for actor data...
          
 0:05     (still waiting)               Start actor
                                        Connect to learner
-                                       Collect random actions
-                                       (steps 0-299)
+                                       Collect random actions       reward = -0.5
+                                       (steps 0-299)               reward = -0.3
+                                                                   reward = +10!
                                        
 0:10     Received 300 transitions!     (collecting step 300)
+         Total buffer: 1300            
+         (1000 demos + 300 new)
          Start training
          Publish initial policy   ───→ Receive policy
          
-0:11     Sample batch (2048)            Use policy for actions
-         Update critics 8×              (steps 301-330)
-         Update actor 1×
-         Update temp 1×
+0:11     Sample batch (2048)            Use policy for actions     reward = +8
+         Update critics 8×              (steps 301-330)            reward = +12
+         Update actor 1×                                           reward = +15
+         Update temp 1×                                            (improving!)
          Publish new policy      ───→  Receive new policy
-         
-0:12     Sample batch (2048)            Continue collecting
-         Train...                       (steps 331-360)
-         Publish policy          ───→  Receive policy
          
 ...      (training continues)           (collecting continues)
          ~1000 updates/sec              ~50-100 steps/sec
          
-Hours later: Training complete         Stop actor
-         Save checkpoint                Load checkpoint
-                                       Run inference only
+Hours    Training complete ✓            Stop actor
+later    Save checkpoint                Load checkpoint
+                                       Run inference only          reward = +20
+                                                                   (expert!)
+```
+
+---
+## Part 15: Key Takeaways (Complete Picture)
+
+1. **Environment defines the task** via reward function
+2. **Reward tells the agent what's good** (not how to do it)
+3. **Actor explores and receives rewards** from environment
+4. **Learner figures out actions→rewards pattern** via SAC
+5. **Demo data is OPTIONAL** but speeds up training significantly
+6. **Training is task-agnostic** - same script for any environment
+7. **Different tasks = different reward functions** (that's it!)
+
+**The Magic:**
+```
+You define: "Reward = +10 if cube lifted"
+SAC learns: "To get +10, I should move gripper to cube, close, lift"
+         ↑
+    WITHOUT you telling it HOW!
+    It discovers the strategy by trial & error!
 ```
 
 ---

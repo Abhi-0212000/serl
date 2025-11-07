@@ -1,7 +1,10 @@
-import gymnasium as gym
+"""Trossen simulation environments."""
 
-gym.register(
-    id="TrossenPickCube-v0",
-    entry_point="trossen_sim.envs.trossen_pick_gym_env:TrossenPickCubeGymEnv",
-    max_episode_steps=100,
-)
+from trossen_sim.envs.trossen_bimanual_gym_env import TrossenBimanualPickPlaceGymEnv
+from trossen_sim.envs.wrappers import FlattenStateWrapper, FlattenActionWrapper
+
+__all__ = [
+    "TrossenBimanualPickPlaceGymEnv",
+    "FlattenStateWrapper",
+    "FlattenActionWrapper",
+]

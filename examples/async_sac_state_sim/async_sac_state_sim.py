@@ -26,6 +26,7 @@ from serl_launcher.common.evaluation import evaluate
 from serl_launcher.utils.timer_utils import Timer
 
 import franka_sim
+import trossen_sim
 
 FLAGS = flags.FLAGS
 
@@ -94,6 +95,9 @@ def actor(agent: SACAgent, data_store, env, sampling_rng):
     eval_env = gym.make(FLAGS.env)
     if FLAGS.env == "PandaPickCube-v0":
         eval_env = gym.wrappers.FlattenObservation(eval_env)
+    elif FLAGS.env == "TrossenBimanualPickPlace-v0":
+        from trossen_sim.envs.wrappers import FlattenStateWrapper
+        eval_env = FlattenStateWrapper(eval_env)
     eval_env = RecordEpisodeStatistics(eval_env)
 
     obs, _ = env.reset()
@@ -266,8 +270,12 @@ def main(_):
     else:
         env = gym.make(FLAGS.env)
 
+    # Flatten dict observations for state-based environments
     if FLAGS.env == "PandaPickCube-v0":
         env = gym.wrappers.FlattenObservation(env)
+    elif FLAGS.env == "TrossenBimanualPickPlace-v0":
+        from trossen_sim.envs.wrappers import FlattenStateWrapper
+        env = FlattenStateWrapper(env)
 
     rng, sampling_rng = jax.random.split(rng)
     agent: SACAgent = make_sac_agent(
