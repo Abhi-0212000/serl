@@ -46,6 +46,12 @@ python single_robot_teleop_sim.py \
     --leader-ip 192.168.1.2 \
     --duration 60
 
+# Run for longer (5 minutes):
+python single_robot_teleop_sim.py --duration 300
+
+# Run indefinitely (until Ctrl+C):
+python single_robot_teleop_sim.py --duration 999999
+
 # Or skip home position:
 python single_robot_teleop_sim.py --no-home --duration 30
 ```
@@ -57,31 +63,56 @@ python dual_robot_teleop_sim.py \
     --left-ip 192.168.1.2 \
     --right-ip 192.168.1.3 \
     --duration 60
+
+# Run for longer:
+python dual_robot_teleop_sim.py \
+    --left-ip 192.168.1.2 \
+    --right-ip 192.168.1.3 \
+    --duration 300
 ```
+
+**Note:** The `--duration` parameter sets how long the teleoperation runs. After the time limit, the script stops automatically. Use Ctrl+C to stop early.
 
 ## What Happens
 
 1. **Initialize**: Connect to leader robots via `trossen_arm` SDK
 2. **Load Sim**: Load MuJoCo model from `trossen_ai_scene_joint.xml`
 3. **Randomize Cube**: Spawn red cube at random table position
-4. **Home Position**: Move leaders to safe home pose (optional)
-5. **Teleop Loop**:
+4. **Set Camera**: Start with left wrist camera view (better for manipulation)
+5. **Home Position**: Move leaders to safe home pose (optional)
+6. **Teleop Loop**:
    ```python
    while running:
        # Read from leader
-       joints = leader.get_all_positions()  # 6D array (radians)
-       gripper = leader.get_gripper_position()  # Scalar (meters)
+       joints = leader.get_all_positions()  # 7D array (6 arm + 1 gripper)
        
-       # Inject into sim
-       data.qpos[0:6] = joints
-       data.qpos[6] = gripper
-       data.qvel[:] = 0  # No velocities (static pose)
+       # Inject into sim control
+       data.ctrl[0:6] = joints  # Arm joints
+       data.ctrl[6:8] = gripper  # Gripper fingers
        
-       # Update sim
-       mujoco.mj_forward(model, data)
+       # Step physics
+       mujoco.mj_step(model, data)
        viewer.sync()
    ```
-6. **Cleanup**: Close connections
+7. **Cleanup**: Close connections
+
+## Camera Controls
+
+The MuJoCo viewer supports multiple camera views:
+
+**Keyboard shortcuts:**
+- **`[`** (left bracket) - Previous camera
+- **`]`** (right bracket) - Next camera  
+- **`0-9`** - Jump to camera by index
+- **`ESC`** - Toggle free camera (mouse control)
+
+**Available cameras:**
+- `[0]` cam_high - Top-down view
+- `[1]` cam_low - Front low angle
+- `[2]` cam_left_wrist - Left wrist view (good for picking!)
+- `[3]` cam_right_wrist - Right wrist view
+
+**Tip:** Use wrist cameras (`[2]` or `[3]`) for precise manipulation and picking.
 
 ## Joint Mapping
 
@@ -122,6 +153,17 @@ Dual robots:                 Dual robots:
 
 **Cube not visible**
 → Check cube joint name in XML (should be "cube_joint")
+
+**MuJoCo crashes/closes unexpectedly**
+→ Check if you reached the time limit (set by `--duration`)
+→ The script stops automatically when time runs out
+→ Increase duration: `--duration 300` (5 minutes)
+→ Or run indefinitely: `--duration 999999`
+
+**Camera switching:**
+→ Use `[` `]` bracket keys to switch cameras
+→ Number keys (0-9) don't work in passive viewer mode
+→ ESC toggles free camera mode
 
 ## Next Steps
 
