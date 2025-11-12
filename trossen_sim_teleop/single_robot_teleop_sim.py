@@ -81,11 +81,58 @@ class SingleRobotTeleopSim:
         # Launch passive viewer (non-blocking)
         self.viewer = mujoco.viewer.launch_passive(self.mj_model, self.mj_data)
         
+        # Set initial camera to left wrist for better view
+        self._set_initial_camera()
+        
         print("✓ MuJoCo sim loaded")
         print(f"  Model name: {self.mj_model.names}")
         print(f"  Num qpos: {self.mj_model.nq}")
         print(f"  Timestep: {self.mj_model.opt.timestep}")
+
+        # Print camera controls
+        self._print_camera_info()
+        
+        # Print actuator info for debugging
+        self._print_actuator_info()
     
+    def _print_actuator_info(self):
+        """Print actuator configuration for debugging"""
+        print("\n--- Actuator Configuration ---")
+        for i in range(min(8, self.mj_model.nu)):  # Print first 8 (left robot)
+            act_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
+            kp = self.mj_model.actuator_gainprm[i][0] if self.mj_model.actuator_gainprm[i][0] != 0 else "default"
+            kv = self.mj_model.actuator_gainprm[i][1] if self.mj_model.actuator_gainprm[i][1] != 0 else "default"
+            print(f"  {act_name}: kp={kp}, kv={kv}")
+        print("--- End Actuator Info ---\n")
+
+    def _set_initial_camera(self):
+        """Set initial camera to wrist view for better manipulation visibility"""
+        try:
+            # Try to set to left wrist camera (better for picking)
+            cam_id = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_CAMERA, "cam_left_wrist")
+            if cam_id >= 0:
+                self.viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+                self.viewer.cam.fixedcamid = cam_id
+                print("✓ Started with left wrist camera view")
+        except:
+            print("ℹ️  Using default free camera (use [ ] to switch cameras)")
+    
+    def _print_camera_info(self):
+        """Print available cameras and controls"""
+        print("\n--- Available Cameras ---")
+        print("Camera Controls:")
+        print("  [ ] - Switch between cameras (left/right bracket)")
+        print("  0-9 - Jump to camera by index")
+        print("  ESC - Toggle free camera (mouse control)")
+        print("\nCameras in scene:")
+        
+        for i in range(self.mj_model.ncam):
+            cam_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_CAMERA, i)
+            if cam_name:
+                print(f"  [{i}] {cam_name}")
+        
+        print("--- End Camera Info ---\n")
+
     def _randomize_cube(self):
         """Randomize cube position in sim"""
         # Find cube joint (assuming it's named 'cube_joint' or similar)
@@ -142,6 +189,9 @@ class SingleRobotTeleopSim:
         end_time = start_time + duration
         loop_count = 0
         
+        print("ℹ️  Teleoperation will run for {:.0f} seconds".format(duration))
+        print("    Press Ctrl+C to stop early\n")
+        
         try:
             while time.time() < end_time and self.viewer.is_running():
                 # 1. Read joint states from leader (returns 7D: 6 joints + 1 gripper)
@@ -153,21 +203,28 @@ class SingleRobotTeleopSim:
                 
                 # 2. Inject into sim qpos
                 # Map leader joints to sim joints
-                self.mj_data.qpos[self.sim_joint_start_idx:self.sim_joint_start_idx+6] = leader_arm_joints
+                self.mj_data.ctrl[self.sim_joint_start_idx:self.sim_joint_start_idx+6] = leader_arm_joints
                 
                 # Set gripper position (in sim, gripper is split into 2 joints)
                 # Index 6 = left/right_carriage_joint, index 7 = left/left_carriage_joint
-                self.mj_data.qpos[6] = leader_gripper  # right carriage
-                self.mj_data.qpos[7] = leader_gripper  # left carriage
+                self.mj_data.ctrl[6] = leader_gripper  # right carriage
+                self.mj_data.ctrl[7] = leader_gripper  # left carriage
                 
-                # Zero out velocities (for smooth visualization)
-                self.mj_data.qvel[self.sim_joint_start_idx:self.sim_joint_start_idx+7] = 0
+                # # Zero out velocities (for smooth visualization)
+                # self.mj_data.qvel[self.sim_joint_start_idx:self.sim_joint_start_idx+7] = 0
                 
-                # 3. Forward kinematics to update sim state
-                mujoco.mj_forward(self.mj_model, self.mj_data)
+                # # 3. Forward kinematics to update sim state
+                # mujoco.mj_forward(self.mj_model, self.mj_data)
+
+                # 3. Step physics forward (this applies forces, respects collisions)
+                mujoco.mj_step(self.mj_model, self.mj_data)
                 
                 # 4. Update viewer
                 self.viewer.sync()
+
+                # Optional: Print contact info when gripper is closing
+                if loop_count % 100 == 0:
+                    self._print_contact_debug()
                 
                 # Sleep to match sim timestep
                 time.sleep(self.mj_model.opt.timestep)
@@ -183,11 +240,35 @@ class SingleRobotTeleopSim:
         except KeyboardInterrupt:
             print("\n✗ Interrupted by user!")
         except Exception as e:
-            print(f"\n✗ Error: {e}")
-            raise
+            print(f"\n✗ Error during teleoperation: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
-            print(f"\n✓ Teleoperation complete ({loop_count} loops)")
+            elapsed = time.time() - start_time
+            print(f"\n✓ Teleoperation complete ({loop_count} loops in {elapsed:.1f}s)")
+
+    def _print_contact_debug(self):
+        """Print contact information for debugging gripper physics"""
+        if self.mj_data.ncon > 0:
+            cube_contacts = []
+            for i in range(self.mj_data.ncon):
+                contact = self.mj_data.contact[i]
+                try:
+                    geom1_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom1) or f"geom{contact.geom1}"
+                    geom2_name = mujoco.mj_id2name(self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom2) or f"geom{contact.geom2}"
+                    
+                    # Only print contacts involving cube or grippers
+                    if 'box' in geom1_name or 'box' in geom2_name or \
+                       'carriage' in geom1_name or 'carriage' in geom2_name or \
+                       'finger' in geom1_name or 'finger' in geom2_name:
+                        cube_contacts.append(f"{geom1_name} <-> {geom2_name}")
+                except:
+                    pass
+            
+            if cube_contacts:
+                print(f"Contacts ({len(cube_contacts)}): {', '.join(cube_contacts[:3])}")  # Print first 3
     
+
     def cleanup(self):
         """Cleanup resources"""
         print("Cleaning up...")
