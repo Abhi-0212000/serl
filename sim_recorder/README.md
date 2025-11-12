@@ -2,29 +2,49 @@
 
 **Self-contained** data collection for SERL robot learning: Record demos from **MuJoCo simulation** controlled by **real robot teleoperation**.
 
-## 🎯 Quick Start
+## 🚀 Quick Start (2 Terminals Required)
 
-**Option 1: Simple recording (no web UI):**
-
+### Terminal 1: Start Web UI Server
 ```bash
-cd sim_recorder/examples
-python teleop_with_server.py --no-visualize
-# Data collection runs in background, cameras stream to web UI
+cd sim_recorder/server
+python app.py
+# Server starts at http://localhost:5000
 ```
 
-**Option 2: With MuJoCo visualization:**
-
+### Terminal 2: Run Teleoperation
 ```bash
-cd sim_recorder/examples  
-python teleop_with_server.py
-# Opens MuJoCo viewer + web UI at http://localhost:5000
+cd sim_recorder/examples
+python teleop_with_server.py --no-visualize --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
+# Connects to robots and streams cameras to web UI
+```
+
+### Open Web UI
+- **Browser**: `http://localhost:5000`
+- **Live camera feeds**: 4 real-time camera streams
+- **Recording controls**: START/STOP buttons
+- **Status**: Recording progress and episode info
+
+## 🎯 Usage Options
+
+**With MuJoCo Visual Viewer:**
+```bash
+# Terminal 2 (after starting server in Terminal 1)
+python teleop_with_server.py --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
+# Opens MuJoCo viewer window + web UI
+```
+
+**Headless (Web UI Only):**
+```bash
+# Terminal 2 (after starting server in Terminal 1)  
+python teleop_with_server.py --no-visualize --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
+# No MuJoCo viewer, web UI only (recommended for data collection)
 ```
 
 **What it does:**
 1. Connects to real leader robots (dual robot support)
 2. Loads MuJoCo simulation (self-contained XML + meshes)
-3. [Optional] Shows MuJoCo viewer
-4. Streams 4 cameras to web UI in real-time
+3. [Optional] Shows MuJoCo viewer window
+4. **Always** streams 4 cameras to web UI in real-time
 5. Records: camera views + robot states + actions
 6. Saves in SERL-compatible format
 
@@ -88,28 +108,35 @@ Where `T` = number of timesteps in the episode.
 ### Basic Recording
 
 ```bash
-# Simple: Record for 60 seconds
-python examples/integrated_teleop_recorder.py --duration 60 --auto-record
+# Terminal 1: Start server
+cd sim_recorder/server
+python app.py
 
-# With web UI for monitoring cameras
-python examples/integrated_teleop_recorder.py --duration 60 --auto-record --web-ui
-# Open http://localhost:5000 in browser to see cameras
+# Terminal 2: Run teleop (headless recommended)
+cd sim_recorder/examples
+python teleop_with_server.py --no-visualize --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
 
-# Specify save location
-python examples/integrated_teleop_recorder.py \
-    --duration 90 \
-    --save-dir my_demos \
-    --auto-record
+# Open browser: http://localhost:5000
+# Click START to begin recording, STOP to end
+```
 
-# Higher control frequency (30 Hz instead of 20 Hz)
-python examples/integrated_teleop_recorder.py \
-    --control-freq 30.0 \
-    --auto-record
+### Different Robot IPs
 
-# Different leader robot IP
-python examples/integrated_teleop_recorder.py \
-    --leader-ip 192.168.1.5 \
-    --auto-record
+```bash
+# If your leader robots have different IPs
+python teleop_with_server.py --no-visualize \
+    --leader-left-ip 192.168.1.10 \
+    --leader-right-ip 192.168.1.11
+```
+
+### With MuJoCo Viewer
+
+```bash
+# If you want to see the simulation visually
+python teleop_with_server.py \
+    --leader-left-ip 192.168.1.2 \
+    --leader-right-ip 192.168.1.3
+# Opens MuJoCo viewer window + web UI
 ```
 
 ### Inspect Recorded Data
@@ -151,33 +178,54 @@ pip install mujoco numpy trossen_arm opencv-python
 
 ## Configuration
 
-Edit `examples/integrated_teleop_recorder.py` if you need to customize:
+Edit `examples/teleop_with_server.py` if you need to customize:
 
 ```python
 # Camera configuration
 camera_names = ['cam_high', 'cam_low', 'cam_left_wrist', 'cam_right_wrist']
 camera_resolution = (128, 128)  # (Height, Width)
 
-# Control frequency
-control_freq = 20.0  # Hz (20 Hz default)
+# Robot IPs (can also set via command line)
+leader_left_ip = '192.168.1.2'
+leader_right_ip = '192.168.1.3'
 
-# Robot model
-model = 'wxai_v0'  # Trossen robot model
+# Server URL
+server_url = 'http://localhost:5000'
 
-# MuJoCo XML path
-XML_PATH = Path(...) / "trossen_ai_scene_joint.xml"
+# Visualization
+visualize = True  # Set to False for headless mode
+```
+
+Command line options:
+```bash
+python teleop_with_server.py --help
 ```
 
 ## Troubleshooting
 
+**Web UI not loading:**
+```bash
+# Make sure server is running in Terminal 1
+cd sim_recorder/server
+python app.py
+
+# Check if port 5000 is available
+netstat -tlnp | grep 5000
+
+# Try different port if needed (edit app.py)
+```
+
 **Leader robot connection fails:**
 ```bash
-# Check if robot is reachable
+# Check if robots are reachable
 ping 192.168.1.2
+ping 192.168.1.3
 
-# Verify robot is powered on and in correct mode
-# Use --leader-ip flag if different IP
-python integrated_teleop_recorder.py --leader-ip 192.168.1.5
+# Verify robots are powered on and in correct mode
+# Use correct IPs
+python teleop_with_server.py --no-visualize \
+    --leader-left-ip 192.168.1.2 \
+    --leader-right-ip 192.168.1.3
 ```
 
 **MuJoCo XML not found:**
@@ -190,25 +238,23 @@ ls assets/meshes/  # Should contain all STL and texture files
 # ../trossen_sim/trossen_sim/envs/xmls/trossen_ai_scene_joint.xml
 ```
 
-**Cameras rendering black/wrong:**
+**Cameras not streaming:**
 ```bash
 # Check MuJoCo installation
 python -c "import mujoco; print(mujoco.__version__)"
 
 # Verify camera names in XML match script
-grep "<camera" trossen_sim/trossen_sim/envs/xmls/trossen_ai_scene_joint.xml
+grep "<camera" assets/trossen_ai_scene_joint.xml
+
+# Check web UI console for errors
+# Make sure teleop script is running in Terminal 2
 ```
 
 **Recording is slow/laggy:**
 ```bash
-# Reduce control frequency
-python integrated_teleop_recorder.py --control-freq 10.0 --auto-record
-
-# Or edit script to reduce camera resolution to 64x64
-camera_resolution = (64, 64)
-
-# Or record fewer cameras
-camera_names = ['cam_high']  # Just one camera
+# The system runs at MuJoCo native timestep (~500Hz)
+# This is optimal for smooth physics
+# If too fast, add sleep in teleop loop (edit teleop_with_server.py)
 ```
 
 ## File Structure
@@ -264,21 +310,32 @@ for t in range(len(actions)):
     # ... feed to your training loop
 ```
 
-## Advanced: Web UI Server (Optional)
+## Advanced: Web UI Server
 
-The `--web-ui` flag automatically starts a Flask server in the background for real-time camera monitoring:
+The web UI server **always runs** and provides real-time camera monitoring:
 
 ```bash
-python examples/integrated_teleop_recorder.py --duration 60 --auto-record --web-ui
+# Terminal 1: Always start the server first
+cd sim_recorder/server
+python app.py
 ```
 
-Then open browser to `http://localhost:5000` to see:
+Then in Terminal 2, choose visualization mode:
+
+```bash
+# With MuJoCo viewer
+python teleop_with_server.py --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
+
+# Without MuJoCo viewer (headless)
+python teleop_with_server.py --no-visualize --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
+```
+
+**Web UI Features:**
 - 4 camera streams updating in real-time
 - Recording status (idle/recording)
 - Episode name and step count
-- Start/Stop recording buttons (if not using --auto-record)
-
-The server automatically shuts down when the script exits.
+- Start/Stop recording buttons
+- **Always available at**: `http://localhost:5000`
 
 ## Step-by-Step Guide
 
