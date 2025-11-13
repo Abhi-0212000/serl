@@ -14,8 +14,9 @@ from datetime import datetime
 class Recorder:
     """Records episodes with FPS-controlled sampling"""
     
-    def __init__(self, camera_manager, base_path='data'):
+    def __init__(self, camera_manager, data_receiver=None, base_path='data'):
         self.camera_manager = camera_manager
+        self.data_receiver = data_receiver
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
         
@@ -83,16 +84,26 @@ class Recorder:
         while self._recording:
             loop_start = time.time()
             
-            # Capture current state
-            frames = self.camera_manager.get_all_frames()
-            
-            # Get action from teleop listener (would need to be passed in)
-            # For now, store empty action
-            action = np.zeros(7)  # Placeholder
-            
-            # Store observation
-            self.current_episode_data['observations'].append(frames)
-            self.current_episode_data['actions'].append(action)
+            # Get latest data from receiver
+            if self.data_receiver:
+                data = self.data_receiver.get_latest_data()
+                if data:
+                    # Use the complete data packet
+                    observation = data['cameras'].copy()
+                    observation.update(data['robot_state'])  # Add qpos, qvel
+                    
+                    self.current_episode_data['observations'].append(observation)
+                    self.current_episode_data['actions'].append(data['action'])
+                else:
+                    # No data available, skip this frame
+                    time.sleep(dt)
+                    continue
+            else:
+                # Fallback to old method (camera only)
+                frames = self.camera_manager.get_all_frames()
+                action = np.zeros(7)  # Placeholder
+                self.current_episode_data['observations'].append(frames)
+                self.current_episode_data['actions'].append(action)
             
             # Sleep to maintain FPS
             elapsed = time.time() - loop_start
@@ -108,15 +119,27 @@ class Recorder:
         # Convert observations list to numpy arrays
         num_steps = len(self.current_episode_data['observations'])
         
-        # Get camera names from first observation
         if num_steps > 0:
-            cam_names = list(self.current_episode_data['observations'][0].keys())
+            # Separate cameras from robot state
+            first_obs = self.current_episode_data['observations'][0]
             
             # Build observation dict
             obs_dict = {}
-            for cam_name in cam_names:
+            
+            # Handle camera images
+            camera_keys = [k for k in first_obs.keys() if k.startswith('cam_')]
+            for cam_name in camera_keys:
                 cam_images = [obs[cam_name] for obs in self.current_episode_data['observations']]
                 obs_dict[cam_name] = np.array(cam_images)
+            
+            # Handle robot state (qpos, qvel)
+            if 'qpos' in first_obs:
+                qpos_list = [obs['qpos'] for obs in self.current_episode_data['observations']]
+                obs_dict['qpos'] = np.array(qpos_list)
+            
+            if 'qvel' in first_obs:
+                qvel_list = [obs['qvel'] for obs in self.current_episode_data['observations']]
+                obs_dict['qvel'] = np.array(qvel_list)
             
             # Save observations
             np.savez_compressed(episode_dir / 'observations.npz', **obs_dict)
@@ -133,7 +156,8 @@ class Recorder:
                 'end_time': time.time(),
                 'duration': time.time() - self.current_episode_data['start_time'],
                 'fps': self.fps,
-                'cameras': cam_names
+                'cameras': camera_keys,
+                'has_robot_state': 'qpos' in first_obs
             }
             
             with open(episode_dir / 'meta.json', 'w') as f:

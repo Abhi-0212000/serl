@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-MuJoCo Teleop with Server Integration
-Runs MuJoCo viewer + sends camera frames to web UI server
-Server controls when to record (via START/STOP buttons)
+MuJoCo Teleop with ZeroMQ Data Transmission
+Runs MuJoCo viewer + sends complete teleop data packets to recording server
+Server controls when to record (via START/STOP buttons in web UI)
 """
 
 import mujoco
@@ -11,8 +11,10 @@ import time
 import numpy as np
 import trossen_arm
 from pathlib import Path
-import requests
-import json
+import zmq
+import threading
+from collections import deque
+import base64
 
 # Path to MuJoCo XML
 XML_PATH_OPTIONS = [
@@ -34,18 +36,54 @@ if XML_PATH is None:
     exit(1)
 
 
+class BoundedDataQueue:
+    """Thread-safe bounded queue with sampling rate control"""
+    
+    def __init__(self, max_size=50, sample_rate=30):
+        self.queue = deque(maxlen=max_size)
+        self.sample_rate = sample_rate
+        self.last_sample_time = 0
+        self.lock = threading.Lock()
+        
+    def put(self, data):
+        """Add data if enough time has passed since last sample"""
+        now = time.time()
+        if now - self.last_sample_time >= 1.0 / self.sample_rate:
+            with self.lock:
+                self.queue.append(data)
+                self.last_sample_time = now
+            return True
+        return False
+    
+    def get(self):
+        """Get oldest item from queue"""
+        with self.lock:
+            return self.queue.popleft() if self.queue else None
+    
+    def get_all(self):
+        """Get all items and clear queue"""
+        with self.lock:
+            items = list(self.queue)
+            self.queue.clear()
+            return items
+    
+    def size(self):
+        """Get current queue size"""
+        with self.lock:
+            return len(self.queue)
+
+
 class TeleopWithServer:
     def __init__(self, 
                  leader_left_ip='192.168.1.2',
                  leader_right_ip='192.168.1.3',
-                 server_url='http://localhost:5000',
                  visualize=True,
                  camera_names=None,
-                 camera_resolution=(128, 128)):
+                 camera_resolution=(640, 480),  # Higher resolution for teleop
+                 zmq_port=5556):
         
         self.leader_left_ip = leader_left_ip
         self.leader_right_ip = leader_right_ip
-        self.server_url = server_url
         self.visualize = visualize
         
         if camera_names is None:
@@ -62,6 +100,22 @@ class TeleopWithServer:
         }
         
         self.camera_resolution = camera_resolution
+        self.zmq_port = zmq_port
+        
+        # ZeroMQ setup for data transmission
+        self.zmq_context = zmq.Context()
+        self.zmq_socket = self.zmq_context.socket(zmq.PUB)
+        self.zmq_socket.connect(f"tcp://localhost:{zmq_port}")
+        
+        # Data queue for async transmission
+        self.data_queue = BoundedDataQueue(max_size=30, sample_rate=30)  # 30fps
+        
+        # Transmission thread
+        self.transmission_thread = None
+        self.transmission_active = False
+        
+        # Sequence counter for data packets
+        self.sequence_counter = 0
         
         # Robot drivers
         self.driver_left = None
@@ -118,18 +172,21 @@ class TeleopWithServer:
         # Setup renderer for cameras
         self.renderer = mujoco.Renderer(self.mj_model, *self.camera_resolution)
         
-        # Check server connection
-        print(f"🌐 Connecting to server at {self.server_url}...")
+        # Check ZeroMQ connection to server
+        print(f"🌐 Testing ZeroMQ connection to server on port {self.zmq_port}...")
         try:
-            response = requests.get(f"{self.server_url}/api/status", timeout=2)
-            if response.status_code == 200:
-                print(f"✓ Server connected")
-            else:
-                print(f"⚠️  Server responded with status {response.status_code}")
+            # Test ZeroMQ connection by sending a test message
+            test_context = zmq.Context()
+            test_socket = test_context.socket(zmq.PUB)
+            test_socket.connect(f"tcp://localhost:{self.zmq_port}")
+            test_socket.send_json({"test": True})
+            test_socket.close()
+            test_context.term()
+            print(f"✓ ZeroMQ connection established")
         except Exception as e:
-            print(f"❌ Cannot connect to server: {e}")
+            print(f"⚠️  Cannot connect to server via ZeroMQ: {e}")
             print(f"   Make sure Flask server is running: cd sim_recorder/server && python app.py")
-            return False
+            # Don't return False - ZeroMQ might still work even if test fails
         
         print("="*60)
         print("✅ Initialization complete!")
@@ -156,52 +213,53 @@ class TeleopWithServer:
         
         return images
     
-    def push_frame_to_server(self, cam_name, image):
-        """Send camera frame to server"""
-        try:
-            # Get camera ID
-            cam_id = self.camera_name_to_id.get(cam_name)
-            if cam_id is None:
-                return
-            
-            # Convert to bytes
-            img_bytes = image.tobytes()
-            
-            # POST to server with camera ID
-            response = requests.post(
-                f"{self.server_url}/api/frame/{cam_id}",
-                data=img_bytes,
-                headers={'Content-Type': 'application/octet-stream'},
-                timeout=0.5
-            )
-            
-            if response.status_code != 200:
-                print(f"⚠️  Server returned {response.status_code} for {cam_name}")
-                
-        except requests.exceptions.Timeout:
-            pass  # Ignore timeouts to not block control loop
-        except Exception as e:
-            print(f"⚠️  Failed to push frame: {e}")
+    def start_data_transmission(self):
+        """Start the async data transmission thread"""
+        if not self.transmission_active:
+            self.transmission_active = True
+            self.transmission_thread = threading.Thread(target=self._transmission_loop, daemon=True)
+            self.transmission_thread.start()
+            print(f"📡 Data transmission started on port {self.zmq_port}")
     
-    def push_state_to_server(self, qpos, qvel, action):
-        """Send robot state + action to server"""
-        try:
-            data = {
-                'qpos': qpos.tolist(),
-                'qvel': qvel.tolist(),
-                'action': action.tolist()
+    def stop_data_transmission(self):
+        """Stop the data transmission thread"""
+        self.transmission_active = False
+        if self.transmission_thread:
+            self.transmission_thread.join(timeout=1.0)
+    
+    def _transmission_loop(self):
+        """Async thread that transmits queued data via ZeroMQ"""
+        while self.transmission_active:
+            # Get all queued data
+            data_packets = self.data_queue.get_all()
+            
+            # Send each packet
+            for packet in data_packets:
+                try:
+                    self.zmq_socket.send_json(packet)
+                except Exception as e:
+                    print(f"⚠️  ZeroMQ send failed: {e}")
+            
+            # Small sleep to prevent busy waiting
+            time.sleep(0.01)
+    
+    def queue_teleop_data(self, cameras, robot_state, action):
+        """Queue complete teleop data packet for transmission"""
+        packet = {
+            'timestamp': time.time(),
+            'sequence': self.sequence_counter,
+            'cameras': cameras,
+            'robot_state': robot_state,
+            'action': action.tolist() if hasattr(action, 'tolist') else action,
+            'metadata': {
+                'frequency': self.data_queue.sample_rate,
+                'camera_resolution': self.camera_resolution,
+                'camera_names': self.camera_names
             }
-            
-            response = requests.post(
-                f"{self.server_url}/api/state",
-                json=data,
-                timeout=0.5
-            )
-            
-        except requests.exceptions.Timeout:
-            pass
-        except Exception as e:
-            print(f"⚠️  Failed to push state: {e}")
+        }
+        
+        self.sequence_counter += 1
+        return self.data_queue.put(packet)
     
     def run_teleop(self):
         """Main teleop loop with viewer"""
@@ -224,6 +282,9 @@ class TeleopWithServer:
         self.driver_right.set_all_external_efforts(zero_efforts, 0.0, False)
         
         print("✓ Both leaders are now FREE to move - start teleoperation!\n")
+        
+        # Start data transmission thread
+        self.start_data_transmission()
         
         try:
             if self.visualize:
@@ -332,22 +393,38 @@ class TeleopWithServer:
         # Combine for recording (16D state + 14D actions)
         qpos = np.concatenate([left_qpos, right_qpos])
         qvel = np.concatenate([left_qvel, right_qvel])
-        action = np.concatenate([left_state[:7], right_state[:7]])  # 14D total
+        action = np.concatenate([left_state[:7], right_state[:7]])  # 14D total. [left_arm(6) + left_gripper(1) + right_arm(6) + right_gripper(1)]
         
         # Capture cameras (every step)
         images = self.capture_cameras()
         
-        # Push data to server
+        # Convert images to base64 for transmission
+        camera_data = {}
         for cam_name, image in images.items():
-            self.push_frame_to_server(cam_name, image)
+            # Convert numpy array to bytes and then base64
+            img_bytes = image.tobytes()
+            camera_data[cam_name] = {
+                'data': base64.b64encode(img_bytes).decode('utf-8'),
+                'shape': image.shape,
+                'dtype': str(image.dtype)
+            }
         
-        # TODO: Send state data to server for recording
-        # self.push_state_to_server(qpos, qvel, action)
+        # Prepare robot state data
+        robot_state = {
+            'qpos': qpos.tolist(),
+            'qvel': qvel.tolist()
+        }
+        
+        # Queue complete data packet for async transmission
+        self.queue_teleop_data(camera_data, robot_state, action)
         
         return True
     
     def cleanup(self):
         """Cleanup resources"""
+        # Stop data transmission
+        self.stop_data_transmission()
+        
         if self.driver_left:
             # TrossenArmDriver doesn't have disconnect, just delete the object
             self.driver_left = None
@@ -356,6 +433,12 @@ class TeleopWithServer:
         if self.driver_right:
             self.driver_right = None
             print("✓ Right leader disconnected")
+        
+        # Close ZeroMQ
+        if hasattr(self, 'zmq_socket'):
+            self.zmq_socket.close()
+        if hasattr(self, 'zmq_context'):
+            self.zmq_context.term()
         
         if self.renderer:
             self.renderer.close()
@@ -371,8 +454,6 @@ def main():
                        help='Left leader robot IP address')
     parser.add_argument('--leader-right-ip', type=str, default='192.168.1.3',
                        help='Right leader robot IP address')
-    parser.add_argument('--server-url', type=str, default='http://localhost:5000',
-                       help='Recording server URL')
     parser.add_argument('--no-visualize', action='store_true',
                        help='Run without MuJoCo viewer (headless mode for web UI only)')
     
@@ -381,7 +462,6 @@ def main():
     teleop = TeleopWithServer(
         leader_left_ip=args.leader_left_ip,
         leader_right_ip=args.leader_right_ip,
-        server_url=args.server_url,
         visualize=not args.no_visualize
     )
     

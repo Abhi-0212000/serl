@@ -1,6 +1,6 @@
-# Sim Recorder
+# SERL Sim Recorder
 
-**Self-contained** data collection for SERL robot learning: Record demos from **MuJoCo simulation** controlled by **real robot teleoperation**.
+**ZeroMQ-powered** data collection for SERL robot learning: Record demos from **MuJoCo simulation** controlled by **real robot teleoperation** with real-time web monitoring.
 
 ## 🚀 Quick Start (2 Terminals Required)
 
@@ -9,20 +9,30 @@
 cd sim_recorder/server
 python app.py
 # Server starts at http://localhost:5000
+# ZeroMQ data receiver on port 5556
 ```
 
 ### Terminal 2: Run Teleoperation
 ```bash
 cd sim_recorder/examples
-python teleop_with_server.py --no-visualize --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
-# Connects to robots and streams cameras to web UI
+python teleop_with_server.py --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3
+# Connects to robots and sends complete data packets via ZeroMQ
 ```
 
 ### Open Web UI
 - **Browser**: `http://localhost:5000`
-- **Live camera feeds**: 4 real-time camera streams
+- **Live camera feeds**: 4 real-time camera streams (dynamically displayed)
 - **Recording controls**: START/STOP buttons
 - **Status**: Recording progress and episode info
+
+## 🎯 Key Features
+
+- **ZeroMQ Communication**: Non-blocking real-time data transmission
+- **Complete Data Packets**: Cameras + robot states + actions in single packets
+- **Multi-Resolution Cameras**: High-res teleop (640x480) with configurable sampling
+- **Bounded Queues**: Prevents memory issues with 30fps sampling
+- **Dynamic Web UI**: Camera grid adapts to active cameras
+- **RLDS-Compatible**: Proper format for SERL training
 
 ## 🎯 Usage Options
 
@@ -68,20 +78,25 @@ No other SERL folders required!
 ## How It Works
 
 ```
-Real Leader Robot (192.168.1.2)
+Real Leader Robots (192.168.1.2 + 192.168.1.3)
        ↓ (read joint positions)
-   [Actions: 7D joint commands]
+   [Actions: 14D joint commands - left 7 + right 7]
        ↓
 MuJoCo Simulation
-   • Apply actions to sim robot
-   • Step physics
-   • Render 4 cameras (128x128)
-   • Get robot state (qpos, qvel)
+   • Apply actions to dual sim robots
+   • Step physics at 500Hz
+   • Render 4 cameras (640x480 each)
+   • Get robot states (qpos, qvel)
        ↓
-Save Episode Data
-   • observations.npz (cameras + states)
-   • actions.npy (leader commands)
-   • meta.json (episode info)
+ZeroMQ Transmission (Port 5556)
+   • Send complete data packets asynchronously
+   • Cameras + states + actions in single packets
+   • Bounded queues prevent memory issues
+       ↓
+Web UI + Recording
+   • Real-time camera streaming
+   • Episode recording with START/STOP controls
+   • Save in RLDS-compatible format
 ```
 
 ## What Gets Recorded
@@ -89,15 +104,15 @@ Save Episode Data
 Each episode folder contains:
 
 ```
-recorded_episodes/episode_20240115_143022/
+data/episode_20240115_143022/
 ├── observations.npz         # All observations
-│   ├── cam_high: (T, 128, 128, 3)      # High camera view
-│   ├── cam_low: (T, 128, 128, 3)       # Low camera view  
-│   ├── cam_left_wrist: (T, 128, 128, 3)  # Left wrist camera
-│   ├── cam_right_wrist: (T, 128, 128, 3) # Right wrist camera
-│   ├── qpos: (T, 8)         # Joint positions (6 arm + 2 gripper)
-│   └── qvel: (T, 8)         # Joint velocities
-├── actions.npy              # Actions from leader robot (T, 7)
+│   ├── cam_high: (T, 640, 480, 3)      # High camera view (teleop resolution)
+│   ├── cam_low: (T, 640, 480, 3)       # Low camera view
+│   ├── cam_left_wrist: (T, 640, 480, 3)  # Left wrist camera
+│   ├── cam_right_wrist: (T, 640, 480, 3) # Right wrist camera
+│   ├── qpos: (T, 16)        # Joint positions (left 8 + right 8 joints)
+│   └── qvel: (T, 16)        # Joint velocities
+├── actions.npy              # Actions from leader robots (T, 14) - left 7 + right 7
 └── meta.json                # Metadata (num_steps, duration, FPS, etc.)
 ```
 
@@ -262,7 +277,7 @@ grep "<camera" assets/trossen_ai_scene_joint.xml
 ```
 sim_recorder/
 ├── README.md                          # This file
-├── QUICKSTART_INTEGRATED.md           # Detailed guide
+├── TESTING_GUIDE.md                   # Comprehensive testing instructions
 ├── requirements.txt                   # Dependencies
 ├── assets/                            # Self-contained MuJoCo assets
 │   ├── trossen_ai_scene_joint.xml     # Main scene XML
@@ -273,10 +288,9 @@ sim_recorder/
 │   ├── convert_to_serl_pickle.py     # Convert to pickle format
 │   └── inspect_episode.py            # Visualize episodes
 ├── server/                            # Web UI server
-│   ├── app.py                         # Flask REST API
+│   ├── app.py                         # Flask REST API + ZeroMQ receiver
 │   ├── cameras.py                     # Camera buffer management
-│   ├── recorder.py                    # Recording engine
-│   └── teleop_ingest.py               # ZeroMQ teleop listener
+│   └── recorder.py                    # Recording engine with FPS sampling
 ├── ui/                                # Web interface
 │   ├── index.html                     # Camera monitoring UI
 │   ├── main.js                        # JavaScript controls
@@ -339,7 +353,7 @@ python teleop_with_server.py --no-visualize --leader-left-ip 192.168.1.2 --leade
 
 ## Step-by-Step Guide
 
-See [RECORDING_GUIDE.md](RECORDING_GUIDE.md) for detailed step-by-step instructions.
+See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing instructions and troubleshooting.
 
 ## License
 

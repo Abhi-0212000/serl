@@ -21,6 +21,9 @@ async function updateStatus() {
         
         isRecording = data.recording;
         
+        // Update camera views dynamically
+        updateCameraViews(data.cameras_active || []);
+        
         // Update UI
         const indicator = document.getElementById('status-indicator');
         const statusText = document.getElementById('status-text');
@@ -47,6 +50,44 @@ async function updateStatus() {
         
     } catch (error) {
         console.error('Failed to update status:', error);
+    }
+}
+
+function updateCameraViews(activeCameras) {
+    const cameraGrid = document.getElementById('camera-grid');
+    
+    // Clear existing views
+    cameraGrid.innerHTML = '';
+    
+    // Camera name mapping
+    const cameraNames = {
+        0: 'Cam High',
+        1: 'Cam Low', 
+        2: 'Cam Left Wrist',
+        3: 'Cam Right Wrist'
+    };
+    
+    // Create views for active cameras
+    activeCameras.forEach(camId => {
+        const cameraView = document.createElement('div');
+        cameraView.className = 'camera-view';
+        
+        const title = document.createElement('h3');
+        title.textContent = cameraNames[camId] || `Camera ${camId}`;
+        
+        const img = document.createElement('img');
+        img.id = `cam-${camId}`;
+        img.src = `/stream_cam/${camId}`;
+        img.alt = `Camera ${camId}`;
+        
+        cameraView.appendChild(title);
+        cameraView.appendChild(img);
+        cameraGrid.appendChild(cameraView);
+    });
+    
+    // If no cameras active, show message
+    if (activeCameras.length === 0) {
+        cameraGrid.innerHTML = '<p style="text-align: center; padding: 2rem; color: #666;">No cameras active</p>';
     }
 }
 
