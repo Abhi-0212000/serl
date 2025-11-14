@@ -5,9 +5,26 @@ let statusInterval = null;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+    loadConfig();
     loadEpisodes();
     startStatusPolling();
 });
+
+async function loadConfig() {
+    try {
+        const response = await fetch('/api/config');
+        const config = await response.json();
+        
+        // Set FPS limits from server config
+        const fpsInput = document.getElementById('fps');
+        fpsInput.min = 1;
+        fpsInput.max = config.max_recording_fps;
+        fpsInput.value = config.default_recording_fps;
+        
+    } catch (error) {
+        console.error('Failed to load config:', error);
+    }
+}
 
 function startStatusPolling() {
     // Poll status every 500ms

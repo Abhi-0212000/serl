@@ -1,53 +1,37 @@
-# SERL Teleop + Recording System - Testing Guide
+# SERL Sim Recorder - Testing Guide
 
-## Overview
-This guide provides step-by-step instructions for testing the improved ZeroMQ-based teleop and recording system.
+## Quick Test
 
-## Prerequisites
-- Access to SERL environment with Trossen robots
-- Two Trossen leader robots connected via USB
-- MuJoCo simulation environment
-- Python dependencies installed
-
-## Test Components
-
-### 1. Server Startup Test
+1. Start server:
 ```bash
 cd sim_recorder/server
 python app.py
 ```
-**Expected Output:**
-```
-============================================================
-SERL Recording Server
-============================================================
-Web UI: http://localhost:5000
-ZeroMQ Teleop: tcp://localhost:5555
-ZeroMQ Data: tcp://localhost:5556
-============================================================
-📡 Teleop data receiver started on port 5556
-```
 
-### 2. Web UI Test
-1. Open browser to `http://localhost:5000`
-2. Verify page loads with "Idle" status
-3. Check that camera grid shows "No cameras active"
-
-### 3. Teleop Connection Test
+2. Start teleop (in another terminal):
 ```bash
 cd sim_recorder/examples
-python teleop_with_server.py --leader-left-ip 192.168.1.2 --leader-right-ip 192.168.1.3 --no-visualize
+python teleop_with_server.py --no-visualize
 ```
-**Expected Output:**
-```
-Initializing Dual Robot Teleop + Server Connection
-📡 Connecting to leader robots...
-  Left at 192.168.1.2...
-  Right at 192.168.1.3...
-✓ Both leaders connected
-🎮 Loading MuJoCo model: trossen_ai_scene_joint.xml
-✓ Cube at [x.xx, y.yy, z.zz]
-✓ MuJoCo sim loaded
+
+3. Open browser: http://localhost:5000
+
+4. Click "Start Recording" in web UI
+
+## Expected Behavior
+
+- Server starts without errors
+- Teleop connects to robots and performs warmup sequence
+- Cameras stream in web UI
+- Recording saves episodes to data/ folder
+- Episodes contain camera images, robot states, and actions
+
+## Troubleshooting
+
+- Check robot IPs in config.yaml
+- Verify MuJoCo XML exists in assets/
+- Check ZeroMQ ports not in use
+- Ensure all Python dependencies installed
 🌐 Connecting to server at http://localhost:5000...
 ✓ Server connected
 📡 Data transmission started on port 5556
