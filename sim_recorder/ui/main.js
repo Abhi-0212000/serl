@@ -38,29 +38,55 @@ async function updateStatus() {
         
         isRecording = data.recording;
         
-        // Update camera views dynamically
-        updateCameraViews(data.cameras_active || []);
-        
-        // Update UI
-        const indicator = document.getElementById('status-indicator');
-        const statusText = document.getElementById('status-text');
-        const startBtn = document.getElementById('start-btn');
-        const stopBtn = document.getElementById('stop-btn');
-        const recordingInfo = document.getElementById('recording-info');
+        // Update warmup button state
+        const warmupBtn = document.getElementById('warmup-btn');
+        if (data.warmup_requested && !data.warmup_completed) {
+            // Warmup requested but not completed - show in progress
+            warmupBtn.disabled = true;
+            warmupBtn.textContent = 'Warm-up Running...';
+        } else if (data.teleop_connected && !data.warmup_completed) {
+            // Teleop connected but warmup not completed - enable warmup button
+            warmupBtn.disabled = false;
+            warmupBtn.textContent = 'Start Warm-up';
+        } else if (data.warmup_completed) {
+            // Warmup completed - disable warmup button
+            warmupBtn.disabled = true;
+            warmupBtn.textContent = 'Warm-up Complete';
+        } else {
+            // No teleop connection - disable warmup button
+            warmupBtn.disabled = true;
+            warmupBtn.textContent = 'Start Warm-up';
+        }
         
         if (isRecording) {
             indicator.className = 'status-indicator recording';
             statusText.textContent = 'Recording';
+            warmupStatus.style.display = 'none';
             startBtn.disabled = true;
             stopBtn.disabled = false;
             recordingInfo.style.display = 'block';
             
             document.getElementById('current-episode').textContent = data.current_episode;
             document.getElementById('num-steps').textContent = data.num_steps;
+        } else if (data.warmup_completed) {
+            indicator.className = 'status-indicator ready';
+            statusText.textContent = 'Ready';
+            warmupStatus.style.display = 'none';
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            recordingInfo.style.display = 'none';
+        } else if (data.teleop_connected) {
+            indicator.className = 'status-indicator warmup';
+            statusText.textContent = 'Teleop Connected';
+            warmupStatus.style.display = 'inline';
+            startBtn.disabled = true;
+            stopBtn.disabled = true;
+            recordingInfo.style.display = 'none';
         } else {
             indicator.className = 'status-indicator idle';
-            statusText.textContent = 'Idle';
-            startBtn.disabled = false;
+            statusText.textContent = 'Waiting for teleop';
+            warmupStatus.style.display = 'none';
+            startBtn.disabled = true;
             stopBtn.disabled = true;
             recordingInfo.style.display = 'none';
         }
@@ -108,7 +134,57 @@ function updateCameraViews(activeCameras) {
     }
 }
 
+async function startWarmup() {
+    const warmupBtn = document.getElementById('warmup-btn');
+    const startBtn = document.getElementById('start-btn');
+    
+    try {
+        warmupBtn.disabled = true;
+        warmupBtn.textContent = 'Triggering Warm-up...';
+        
+        // Send warmup trigger request to server
+        const response = await fetch('/api/warmup/trigger', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            warmupBtn.textContent = 'Warm-up Triggered';
+            alert('Warm-up command sent to teleop client. The sequence will start shortly.');
+        } else {
+            alert('Failed to trigger warm-up: ' + result.error);
+            warmupBtn.disabled = false;
+            warmupBtn.textContent = 'Start Warm-up';
+        }
+        
+    } catch (error) {
+        console.error('Failed to trigger warmup:', error);
+        alert('Failed to trigger warm-up: ' + error.message);
+        warmupBtn.disabled = false;
+        warmupBtn.textContent = 'Start Warm-up';
+    }
+}
+
 async function startRecording() {
+    // First check if warmup is completed
+    try {
+        const statusResponse = await fetch('/api/status');
+        const statusData = await statusResponse.json();
+        
+        if (!statusData.warmup_completed) {
+            alert('Please complete warm-up first. Start the teleop client to perform warm-up.');
+            return;
+        }
+    } catch (error) {
+        console.error('Failed to check warmup status:', error);
+        alert('Unable to verify warm-up status. Please try again.');
+        return;
+    }
+    
     const episodeName = document.getElementById('episode-name').value;
     const fps = parseInt(document.getElementById('fps').value) || 15;
     
@@ -148,6 +224,9 @@ async function stopRecording() {
         if (data.success) {
             console.log('Recording stopped:', data.episode_path);
             loadEpisodes();
+            
+            // Reset warmup status so user needs to warmup before next recording
+            await fetch('/api/warmup/reset', { method: 'POST' });
         } else {
             alert('Failed to stop recording');
         }

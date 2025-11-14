@@ -79,7 +79,7 @@ class DualRobotTeleopSim:
             False
         )
         
-        print(f"✓ Both leaders connected")
+        print(f"OK Both leaders connected")
         print(f"  Left joints: {self.driver_left.get_num_joints()}")
         print(f"  Right joints: {self.driver_right.get_num_joints()}")
     
@@ -103,7 +103,7 @@ class DualRobotTeleopSim:
         # Set initial camera to left wrist for better view
         self._set_initial_camera()
         
-        print("✓ MuJoCo sim loaded")
+        print("OK MuJoCo sim loaded")
         print(f"  Num qpos: {self.mj_model.nq}")
         print(f"  Num ctrl: {self.mj_model.nu}")
         print(f"  Timestep: {self.mj_model.opt.timestep}")
@@ -132,7 +132,7 @@ class DualRobotTeleopSim:
             if cam_id >= 0:
                 self.viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
                 self.viewer.cam.fixedcamid = cam_id
-                print("✓ Started with left wrist camera view")
+                print("Started with left wrist camera view")
         except:
             print("ℹ️  Using default free camera (use [ ] to switch cameras)")
     

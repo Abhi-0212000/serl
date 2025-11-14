@@ -13,6 +13,7 @@
             <div class="status" id="status">
                 <span class="status-indicator" id="status-indicator"></span>
                 <span id="status-text">Idle</span>
+                <span id="warmup-status" class="warmup-status" style="display:none;">(Warm-up in progress...)</span>
             </div>
         </header>
 
@@ -25,7 +26,10 @@
                     <input type="number" id="fps" placeholder="FPS" value="15" min="1" max="60" />
                 </div>
                 <div class="button-group">
-                    <button id="start-btn" class="btn btn-start" onclick="startRecording()">
+                    <button id="warmup-btn" class="btn btn-warmup" onclick="startWarmup()">
+                        Start Warm-up
+                    </button>
+                    <button id="start-btn" class="btn btn-start" onclick="startRecording()" disabled>
                         Start Recording
                     </button>
                     <button id="stop-btn" class="btn btn-stop" onclick="stopRecording()" disabled>

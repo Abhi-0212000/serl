@@ -58,6 +58,21 @@ h1 {
     animation: pulse 1.5s ease-in-out infinite;
 }
 
+.status-indicator.warmup {
+    background: #f39c12;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.status-indicator.ready {
+    background: #27ae60;
+}
+
+.warmup-status {
+    color: #f39c12;
+    font-weight: 500;
+    margin-left: 10px;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
@@ -157,6 +172,15 @@ input[type="number"] {
 
 .btn-danger:hover {
     background: #c0392b;
+}
+
+.btn-warmup {
+    background: #f39c12;
+    color: white;
+}
+
+.btn-warmup:hover:not(:disabled) {
+    background: #e67e22;
 }
 
 .btn-small {

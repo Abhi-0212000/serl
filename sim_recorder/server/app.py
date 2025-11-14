@@ -13,10 +13,35 @@ from datetime import datetime
 import zmq
 import base64
 import time
+import yaml
+import sys
 
 # Import recorder components
 from cameras import CameraManager
 from recorder import Recorder
+
+# Load configuration
+CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+try:
+    with open(CONFIG_PATH, 'r') as f:
+        config = yaml.safe_load(f)
+except FileNotFoundError:
+    print(f"ERROR: Configuration file not found: {CONFIG_PATH}")
+    print("Please ensure config.yaml exists in the sim_recorder directory")
+    sys.exit(1)
+except yaml.YAMLError as e:
+    print(f"ERROR: Invalid YAML in config file: {e}")
+    sys.exit(1)
+
+# Extract server config for easy access
+SERVER_CONFIG = config['server']
+
+# Configuration constants (from YAML)
+MAX_RECORDING_FPS = SERVER_CONFIG['recording']['max_fps']
+DEFAULT_RECORDING_FPS = SERVER_CONFIG['recording']['default_fps']
+DATA_SAVE_PATH = SERVER_CONFIG['recording']['save_path']
+ZMQ_PORT = SERVER_CONFIG['network']['zmq_port']
+HTTP_PORT = SERVER_CONFIG['network']['http_port']
 
 
 class TeleopDataReceiver:
@@ -33,6 +58,14 @@ class TeleopDataReceiver:
         self.latest_data = None
         self.lock = threading.Lock()
         
+        # Connection status
+        self.last_data_time = None
+        self.teleop_connected = False
+        
+        # Warmup status
+        self.warmup_completed = False
+        self.warmup_requested = False
+        
         # Receiver thread
         self.thread = None
         self.running = False
@@ -43,7 +76,7 @@ class TeleopDataReceiver:
             self.running = True
             self.thread = threading.Thread(target=self._receive_loop, daemon=True)
             self.thread.start()
-            print(f"📡 Teleop data receiver started on port {self.zmq_port}")
+            print(f"Teleop data receiver started on port {self.zmq_port}")
     
     def stop(self):
         """Stop receiving"""
@@ -70,6 +103,8 @@ class TeleopDataReceiver:
                     
                     # Update buffered data
                     with self.lock:
+                        self.last_data_time = time.time()
+                        self.teleop_connected = True
                         self.latest_data = {
                             'timestamp': data['timestamp'],
                             'sequence': data['sequence'],
@@ -91,12 +126,15 @@ class TeleopDataReceiver:
                                 camera_manager.update_frame(3, image)
                 
             except Exception as e:
-                print(f"⚠️  Data receiver error: {e}")
+                print(f"Warning: Data receiver error: {e}")
                 time.sleep(0.1)
     
     def get_latest_data(self):
         """Get latest received data"""
         with self.lock:
+            # Check if connection is still active (within 2 seconds)
+            if self.last_data_time and (time.time() - self.last_data_time) > 2.0:
+                self.teleop_connected = False
             return self.latest_data.copy() if self.latest_data else None
 
 
@@ -104,8 +142,8 @@ app = Flask(__name__, static_folder='../ui', static_url_path='')
 
 # Initialize components
 camera_manager = CameraManager(num_cameras=4)
-data_receiver = TeleopDataReceiver(zmq_port=5556)
-recorder = Recorder(camera_manager, data_receiver, base_path='data')
+data_receiver = TeleopDataReceiver(zmq_port=ZMQ_PORT)
+recorder = Recorder(camera_manager, data_receiver, base_path=DATA_SAVE_PATH)
 
 # Store in app config for access
 app.config['camera_manager'] = camera_manager
@@ -133,8 +171,44 @@ def get_status():
         'current_episode': recorder.current_episode_name if recorder.is_recording() else None,
         'num_steps': recorder.get_num_steps() if recorder.is_recording() else 0,
         'cameras_active': camera_manager.get_active_cameras(),
+        'warmup_completed': data_receiver.warmup_completed,
+        'teleop_connected': data_receiver.teleop_connected,
+        'warmup_requested': data_receiver.warmup_requested,
         'latest_action': latest_data['action'].tolist() if latest_data and 'action' in latest_data else None
     })
+
+
+@app.route('/api/warmup/trigger', methods=['POST'])
+def request_warmup():
+    """Request warmup from connected teleop client"""
+    if not data_receiver.teleop_connected:
+        return jsonify({
+            'success': False,
+            'error': 'No teleop client connected'
+        }), 400
+    
+    data_receiver.warmup_requested = True
+    data_receiver.warmup_completed = False  # Reset completion flag
+    
+    return jsonify({
+        'success': True,
+        'message': 'Warmup requested'
+    })
+
+
+@app.route('/api/warmup/clear', methods=['POST'])
+def clear_warmup():
+    """Clear warmup request flag"""
+    data_receiver.warmup_requested = False
+    return jsonify({'success': True})
+
+
+@app.route('/api/warmup/reset', methods=['POST'])
+def reset_warmup():
+    """Reset warmup completed flag (for next episode)"""
+    data_receiver.warmup_completed = False
+    data_receiver.warmup_requested = False
+    return jsonify({'success': True})
 
 
 @app.route('/api/start', methods=['POST'])
@@ -144,11 +218,25 @@ def start_recording():
     episode_name = data.get('episode_name', f"episode_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     fps = data.get('fps', 15)
     
+    # Validate FPS against available data rate (30Hz max from teleop)
+    if fps > MAX_RECORDING_FPS:
+        return jsonify({
+            'success': False,
+            'error': f'FPS {fps} exceeds maximum available data rate of {MAX_RECORDING_FPS}Hz'
+        }), 400
+    
+    if fps < 1:
+        return jsonify({
+            'success': False,
+            'error': 'FPS must be at least 1'
+        }), 400
+    
     success = recorder.start_recording(episode_name, fps=fps)
     
     return jsonify({
         'success': success,
-        'episode_name': episode_name
+        'episode_name': episode_name,
+        'fps': fps
     })
 
 
@@ -163,11 +251,58 @@ def stop_recording():
     })
 
 
-@app.route('/api/list', methods=['GET'])
-def list_episodes():
-    """List all recorded episodes"""
-    episodes = recorder.list_episodes()
-    return jsonify({'episodes': episodes})
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    """Get configuration values for UI"""
+    return jsonify({
+        'max_recording_fps': MAX_RECORDING_FPS,
+        'default_recording_fps': DEFAULT_RECORDING_FPS
+    })
+
+
+@app.route('/api/warmup/trigger', methods=['POST'])
+def trigger_warmup():
+    """Trigger warmup sequence in teleop client"""
+    try:
+        # Check if teleop client is connected
+        if not data_receiver.teleop_connected:
+            return jsonify({
+                'success': False,
+                'error': 'Teleop client not connected. Start the teleop client first.'
+            }), 400
+        
+        # Send warmup command to teleop client
+        if data_receiver.send_warmup_command():
+            return jsonify({'success': True, 'message': 'Warmup command sent to teleop client'})
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to send warmup command'
+            }), 500
+            
+    except Exception as e:
+        print(f"Error triggering warmup: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/warmup/complete', methods=['POST'])
+def warmup_complete():
+    """Receive notification that warmup is complete"""
+    try:
+        data = request.json
+        status = data.get('status', 'completed')
+        
+        # Set warmup completed flag
+        data_receiver.warmup_completed = True
+        
+        print(f"Warmup completed with status: {status}")
+        return jsonify({'received': True})
+    except Exception as e:
+        print(f"Error processing warmup notification: {e}")
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/api/delete', methods=['POST'])
@@ -226,13 +361,18 @@ def main():
     data_receiver.start()
     
     print("="*60)
-    print("SERL Recording Server")
+    print("SERL Recording Server Configuration")
     print("="*60)
-    print(f"Web UI: http://localhost:5000")
-    print(f"ZeroMQ Data: tcp://localhost:5556")
+    print(f"ZeroMQ Data Port: {ZMQ_PORT}")
+    print(f"Max Recording FPS: {MAX_RECORDING_FPS}Hz (limited by teleop data rate)")
+    print(f"Default Recording FPS: {DEFAULT_RECORDING_FPS}Hz")
+    print(f"Episode Save Path: {DATA_SAVE_PATH}")
+    print(f"Web UI: http://localhost:{HTTP_PORT}")
+    print("="*60)
+    print("Waiting for teleop data... (start teleop_with_server.py)")
     print("="*60)
     
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=HTTP_PORT, debug=False, threaded=True)
 
 
 if __name__ == '__main__':
